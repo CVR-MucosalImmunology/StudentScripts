@@ -1,0 +1,741 @@
+---
+title: "Domanska et al. 2021"
+date: "2024-11-28"
+author: "Thomas O'Neil (thomas.oneil@sydney.edu.au)"
+output:
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    embed-resources: true
+    theme: flatly
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=F, message = F)
+```
+
+# Background{.tabset .tabset-fade}
+
+Data was published in a paper by [Domanska et al. 2021](https://pubmed.ncbi.nlm.nih.gov/35139155/) and the Frode Jahnsen lab. It was accessible by EGAD00001007765. Data was aligned by Brian Gloss. 
+
+<details><summary>**Methods from paper**</summary>
+
+**Digestion**
+
+Resected colonic tissues were processed within 2 h after removal from the patient. Single-cell suspensions of colonic resections were obtained using a modified version of a previously published protocol (Bujko et al., 2018). The intestinal specimens were opened longitudinally and washed in Dulbecco’s PBS. The muscularis propria was first removed with scissors, after which the mucosa was dissected in narrow strips. The mucosal fragments were then incubated with shaking in PBS with 2 mM EDTA (Sigma-Aldrich) and 1% FCS (Sigma-Aldrich) three times for 15 min at 37°C. The remaining tissue was minced and digested with stirring for 60 min in complete RPMI (RPMI 1640 [Lonza] supplemented with 10% FCS, 1% penicillin/streptomycin [Lonza] and containing 0.25 mg/ml Liberase TL [Roche] and 20 U/ml DNase I [Sigma-Aldrich]). Digested cell suspension was passed through a 100-µm filter and washed.
+
+**scRNA**  
+Cellular suspensions (∼15,000 cells, with expected recovery of ∼7,500 cells) of sorted CD45+HLA-DR+CD14+ macrophages from colonic mucosa and muscularis propria were loaded on the 10X Chromium Controller instrument (10X Genomics) according to the manufacturer’s protocol using 10X GEMCode proprietary technology. All samples from individual patients were loaded in one batch. The Chromium Single Cell 3′ v2 Reagent kit (10X Genomics) was used to generate the cDNA and prepare the libraries, according to the manufacturer’s protocol. The libraries were then equimolarly pooled and sequenced on an Illumina NextSeq500 using HighOutput flow cells v2.5. A coverage of 400 million reads per sample was targeted to obtain 50,000 reads per cell. The raw data were then demultiplexed and processed with the Cell Ranger software (10X Genomics) v2.1.1.
+
+**Data processing**
+In total, we analyzed 63,917 human cells from donors (n = 4). We aligned the reads of the input dataset to the GRCh38 reference genomes and estimated cell-containing partitions and associated unique molecular identifiers using the Cell Ranger Chromium Single Cell RNA-seq v3.0.2. We performed data preparation using Seurat R packages. Genes expressed in fewer than three cells in a sample were excluded, as well as cells that expressed fewer than 200 genes and mitochondrial gene content >5% of the total unique molecular identifier count. We normalized data by using gene counts for each cell that were divided by the total counts for that cell and multiplied by 10,000 and then log-transformed. Subsequently, we identified genes that were outliers on a mean variability plot using the vst method with 2,000 genes. For mucosa and muscularis data, we separately found integration anchors and then performed data integration using a precomputed anchorSet with default parameters. Finally, we scaled data and centered genes in the dataset using linear model.
+
+</details><br><hr>
+
+
+## Setup
+
+```{r, include=F}
+source("https://raw.githubusercontent.com/DrThomasOneil/CVR-site/refs/heads/master/data/.functions_dev.R")
+maxSize(8)
+```
+
+
+```{r, eval=T}
+setwd("/Users/thomasoneil/Library/CloudStorage/OneDrive-TheUniversityofSydney(Staff)/projectz/EGAD00001007765_bujko_singlecell")
+
+if(!dir.exists("raw")){dir.create("raw")}
+if(!dir.exists("data")){dir.create("data")}
+if(!dir.exists("plots")){dir.create("plots")}
+if(!dir.exists("plots/qc")){dir.create("plots/qc")}
+
+
+meta <- read.csv(paste0("raw/",list.files("raw")[9]))
+dat_list <- list()
+```
+
+## Sample 1 as an example{.tabset .tabset-fade}
+
+Here I'll show you how I add percent.mt as a metric for measuring mitochondrial content.
+
+I'll also recreate the data processing and filtering, such as cells that don't have more than 200 unique genes and less than 5% mito. 
+
+First I load in the data with cells that have at least 3 genes present and genes that are expressed in at least 3 cells. This reduces a lot of empty cell reads. For example, without the intial filter, you're working with `38,606` genes and `1,240,621` cells. After intial filters, you are only working with `25,654` genes and `112,253` cells. You'll see that this gets cut down to about `2000` cells after filtering, so dont worry about losing too much data in this first sample.  
+
+```{r}
+i=1
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+## Remaining samples{.tabset .tabset-fade}
+
+The remaining samples will be processed here with the same cutoff metrics. 
+
+### Sample 2
+
+```{r}
+i=2
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+
+
+
+
+### Sample 3
+
+```{r}
+i=3
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+
+
+
+### Sample 4
+
+```{r}
+i=4
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+
+
+
+
+### Sample 5
+
+```{r}
+i=5
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+
+
+
+
+### Sample 6
+
+```{r}
+i=6
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+
+
+
+### Sample 7
+
+```{r}
+i=7
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+
+
+
+### Sample 8
+
+```{r}
+i=8
+dat <- CreateSeuratObject(Read10X(paste0("raw/", meta$file_accession_id[i], "/raw_feature_bc_matrix")), 
+                          project = meta$file_accession_id[i], 
+                          min.cells= 3, 
+                          min.features=3)
+dat$percent.mt <- PercentageFeatureSet(dat, pattern="^MT-")
+```
+
+#### Conventional way of visualising the data
+
+Using this, we can visualise the cut offs we choose, such as nFeature_RNA <200 and percent.mt >5  
+
+
+
+```{r}
+p1 = FeatureScatter(dat, "nFeature_RNA", "nCount_RNA", pt.size=2) + geom_vline(xintercept = 200) + NoLegend()
+p2 = VlnPlot(dat, "percent.mt", pt.size=0.1, raster=F)+geom_hline(yintercept = 5)+NoLegend()+ylab("Percent.mt")+ggtitle("")+theme(axis.text.x = element_text(size=0))+xlab("")
+plot_grid(p1,p2, rel_widths = c(3,2))
+```
+
+#### Another way of viewing
+
+We can also visualise the distribution of the poor QC and mitochondrial high cells and what exactly you're cutting out. 
+
+```{r, fig.width=10, fig.height=9}
+dat<-qcMe(dat, nfeat=200, percent.mito = 5, return.seurat=T)
+```
+
+#### Filtering genes
+
+```{r}
+cutoff = 10
+passcutoff = rowSums(dat[["RNA"]]$counts!=0)>cutoff
+
+data.frame(Features=Features(dat), Counts = rowSums(dat[["RNA"]]$counts!=0)) %>%
+  ggplot(aes(Counts)) + geom_histogram(aes(fill='red'), bins=500)+theme_pubclean()+NoLegend()+
+  geom_vline(xintercept = cutoff, alpha=0.1)+
+  xlim(0,1000)+
+labs(subtitle=paste0("Cut off set: ", 
+                 cutoff, 
+                 ".\n", 
+                 round(100*sum(passcutoff)/nrow(dat),2)
+                 , "% (", sum(passcutoff), " genes pass cut off)"))
+```
+
+
+```{r}
+
+dat <- subset(dat, subset = filt!="throw", features = Features(dat)[rowSums(dat[["RNA"]]$counts !=0)>cutoff])
+dat$tis = meta$sample_title[i]
+dat$sample = meta$sample_alias[i]
+dat$accession = meta$file_accession_id[i]
+dat_list[i] <- dat
+
+```
+
+## Integration
+
+Here I'll show the integrated data
+
+```{r, eval=F}
+dat <- merge(dat_list[[1]], dat_list[[2]])
+dat <- merge(dat, dat_list[[3]])
+dat <- merge(dat, dat_list[[4]])
+dat <- merge(dat, dat_list[[5]])
+dat <- merge(dat, dat_list[[6]])
+dat <- merge(dat, dat_list[[7]])
+dat <- merge(dat, dat_list[[8]])
+
+JoinLayers(dat)
+
+#dat[["RNA"]] <- split(dat[["RNA"]], f = dat$sample)
+
+dat <- NormalizeData(dat,verbose=F)
+dat <- FindVariableFeatures(dat,verbose=F)
+dat <- ScaleData(dat,verbose=F)
+dat <- RunPCA(dat,verbose=F)
+
+dat <- IntegrateLayers(object = dat, method = RPCAIntegration, orig.reduction = "pca", new.reduction = "integrated.rpca", verbose=F)
+
+dat <- RunUMAP(dat, reduction = "integrated.rpca", dims=1:30, verbose=F)
+dat <- FindNeighbors(dat, dims=1:30, reduction="integrated.rpca", verbose=F)
+dat <- FindClusters(dat, resolution=0.2, reduction="integrated.rpca", verbose=F)
+
+UMAPPlot(dat, label=T, pt.size=2, label.box=T)
+dat <- JoinLayers(dat, verbose=F)
+
+
+dat <- RenameIdents(dat, 
+                    "0"="Mo1",
+                    "1"="Mo2",
+                    "2"="Mo3",
+                    "4"="Mo4",
+                    "8"="Cycling",
+                    "5"="Plasma",
+                    "9"="Lymphocytes",
+                    "6"="Non-Imm",
+                    "10"="Mixed/Non-Imm",
+                    "3"="LowQ",
+                    "7"="LowQ"
+                    )
+
+```
+
+
+## Reference data{.tabset .tabset-fade}
+
+<strong>*As this is the first time, this will just be a test of this new function.*</strong>
+
+Here I have set up a few reference datasets to derive reference annotations just as a suggestion for labelling
+
+- Gut Cell Atlas: Colon
+  - ...
+  - ...
+  - ...
+  
+- Pelka: Colon
+  - ...
+  - ...
+  - ...
+
+- Jaegger: Colon
+  - ...
+  - ...
+  - ...
+  
+- Reynolds: Skin
+  - ...
+  - ...
+  - ...
+  
+- ...: PBMC
+  - ...
+  - ...
+  - ...
+  
+If these reference data are used, you will see in the data metadata columns labelled as `GCA_broad_subset`, or specific cells, such as `GCA_MNP_
+
+<strong>*For this intiial test, I'm using the paediatric data.*</strong>
+
+```{r, eval=F}
+ref <- readRDS("/Users/thomasoneil/Library/CloudStorage/OneDrive-TheUniversityofSydney(Staff)/projectz/ref_temp/paediatricdata_subset.rds")
+ref$annot <- ref$category
+predictions <- TransferData(
+      anchorset = FindTransferAnchors(reference = ref, query = dat, features=VariableFeatures(ref), verbose=F),
+      refdata = ref$annot, verbose=F
+    )
+
+colnames(predictions) = c("GCA_broad_IDs", paste0("GCA_broad_",sapply(str_split(colnames(predictions)[2:c(ncol(predictions)-1)], "\\."), function(x) x[3])), "Max")
+
+predictions=predictions[,-ncol(predictions)]
+
+dat <- AddMetaData(dat, metadata=predictions)
+
+```
+
+```{r, include=F}
+dat <- readRDS("data/data_qc_int.rds")
+```
+
+```{r}
+plot_grid(proportions(dat, "ident", "GCA_broad_IDs", "fill"),UMAPPlot(dat, label=T, label.box=T, pt.size=2)+NoLegend()+NoAxes(), rel_widths = c(2,1))
+
+
+```
+
+```{r, eval=T}
+
+
+DotPlot(dat, features=c("CD14", "LYZ", "S100A8", "CD163", 
+                        "ITGAE", "MKI67", "TYMS", "CD79A", "MZB1", "CD3E", "COL1A1", "DSG2", "AOC1"))+RotatedAxis()
+
+dat$init <- Idents(dat)
+
+```
+
+
+```{r, eval=F}
+saveRDS(dat, "data/data_qc_int.rds")
+```
+
+## Subset to MNP Mucosa
+
+Mo1-4 subset and re-integrated. 
+
+```{r,eval=F}
+
+dat <- subset(dat, idents= c("Mo1", "Mo2", "Mo3", "Mo4", "Cycling"))
+dat <- subset(dat, subset = tis == "Mucosa")
+
+JoinLayers(dat, verbose=F)
+dat[["RNA"]] <- split(dat[["RNA"]], f = dat$sample, verbose=F)
+dat <- NormalizeData(dat,verbose=F)
+dat <- FindVariableFeatures(dat,verbose=F)
+dat <- ScaleData(dat,verbose=F)
+dat <- RunPCA(dat,verbose=F)
+maxSize(5)
+dat <- IntegrateLayers(object = dat, method = RPCAIntegration, orig.reduction = "pca", new.reduction = "integrated.rpca", verbose=F)
+dat <- RunUMAP(dat, reduction = "integrated.rpca", dims=1:30, verbose=F)
+dat <- FindNeighbors(dat, dims=1:30, reduction="integrated.rpca", verbose=F)
+dat <- FindClusters(dat, resolution=0.3, reduction="integrated.rpca", verbose=F)
+
+dat <- JoinLayers(dat)
+
+# dat <- RenameIdents(dat, 
+#                     "0" ="Mo1",
+#                     "1" ="Mo2",
+#                     "2" ="Mo3",
+#                     "3" ="Mo4",
+#                     "4" ="Mo5"
+#                     )
+
+```
+
+```{r, include=F}
+gc()
+rm(dat_list)
+dat <- readRDS("data/Mo_int.rds")
+```
+
+```{r}
+plot_grid(plot_grid(UMAPPlot(dat, label=T, pt.size=2, label.box=T),
+FeaturePlot(dat, "S100A8", pt.size=2, order=F), ncol=2),
+proportions(dat, "sample", "ident", facet="tis"), ncol=1)
+```
+
+
+```{r, eval=F}
+saveRDS(dat, "data/Mo_int.rds")
+```
+
